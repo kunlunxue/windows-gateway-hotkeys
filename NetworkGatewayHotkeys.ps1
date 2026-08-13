@@ -1,10 +1,11 @@
-# Windows gateway/DNS hotkeys for the physical WLAN adapter.
-# Ctrl+Alt+1 -> 192.168.3.1; Ctrl+Alt+2 -> 192.168.3.11
+# Ctrl+Alt+1 -> Profile A; Ctrl+Alt+2 -> Profile B
 # Ctrl+Alt+G -> show current gateway and DNS.
 
 $ErrorActionPreference = 'Stop'
-$interfaceIndex = 5
-$interfaceAlias = 'WLAN'
+$configPath = Join-Path $PSScriptRoot 'Config.json'
+if (-not (Test-Path -LiteralPath $configPath)) { throw "Configuration not found: $configPath" }
+$config = Get-Content -LiteralPath $configPath -Raw | ConvertFrom-Json
+$interfaceAlias = [string]$config.InterfaceAlias
 
 Add-Type @'
 using System;
@@ -41,48 +42,41 @@ function Show-Status([string]$title, [string]$text, [System.Windows.Forms.ToolTi
         $notify.Visible = $true
         $notify.ShowBalloonTip(4000, $title, $text, $icon)
         Start-Sleep -Milliseconds 4200
-    } finally {
-        $notify.Dispose()
-    }
+    } finally { $notify.Dispose() }
 }
 
-function Assert-TargetAdapter {
-    $adapter = Get-NetAdapter -InterfaceIndex $interfaceIndex -ErrorAction Stop
-    if ($adapter.Name -ne $interfaceAlias) {
-        throw "Interface index $interfaceIndex is '$($adapter.Name)', not '$interfaceAlias'. No changes were made."
-    }
+function Get-TargetAdapter {
+    return Get-NetAdapter -Name $interfaceAlias -ErrorAction Stop
 }
 
-function Set-GatewayAndDns([string]$address) {
+function Set-NetworkProfile($profile, [string]$profileName) {
     try {
-        Assert-TargetAdapter
+        $adapter = Get-TargetAdapter
+        $interfaceIndex = $adapter.ifIndex
         $ip = Get-NetIPAddress -InterfaceIndex $interfaceIndex -AddressFamily IPv4 |
             Where-Object AddressState -ne Duplicate | Select-Object -First 1
-        if (-not $ip) { throw 'WLAN has no IPv4 address.' }
+        if (-not $ip) { throw "$interfaceAlias has no IPv4 address." }
 
         Get-NetRoute -InterfaceIndex $interfaceIndex -DestinationPrefix '0.0.0.0/0' -AddressFamily IPv4 -ErrorAction SilentlyContinue |
             Remove-NetRoute -Confirm:$false -ErrorAction Stop
-        New-NetRoute -InterfaceIndex $interfaceIndex -DestinationPrefix '0.0.0.0/0' -NextHop $address -RouteMetric 0 | Out-Null
-        Set-DnsClientServerAddress -InterfaceIndex $interfaceIndex -ServerAddresses $address
+        New-NetRoute -InterfaceIndex $interfaceIndex -DestinationPrefix '0.0.0.0/0' -NextHop $profile.Gateway -RouteMetric 0 | Out-Null
+        Set-DnsClientServerAddress -InterfaceIndex $interfaceIndex -ServerAddresses @($profile.Dns)
         Clear-DnsClientCache
-        Show-Status 'Network switched' "Adapter: $interfaceAlias`nGateway: $address`nDNS: $address"
-    } catch {
-        Show-Status 'Network switch failed' $_.Exception.Message 'Error'
-    }
+        Show-Status "Switched to Profile $profileName" "Adapter: $interfaceAlias`nGateway: $($profile.Gateway)`nDNS: $(@($profile.Dns) -join ', ')"
+    } catch { Show-Status 'Network switch failed' $_.Exception.Message 'Error' }
 }
 
 function Show-NetworkStatus {
     try {
-        Assert-TargetAdapter
+        $adapter = Get-TargetAdapter
+        $interfaceIndex = $adapter.ifIndex
         $gateway = (Get-NetRoute -InterfaceIndex $interfaceIndex -DestinationPrefix '0.0.0.0/0' -AddressFamily IPv4 -ErrorAction SilentlyContinue |
             Sort-Object RouteMetric | Select-Object -First 1).NextHop
         $dns = (Get-DnsClientServerAddress -InterfaceIndex $interfaceIndex -AddressFamily IPv4).ServerAddresses -join ', '
         if (-not $gateway) { $gateway = 'Not configured' }
         if (-not $dns) { $dns = 'Not configured' }
         Show-Status 'Current network configuration' "Adapter: $interfaceAlias`nGateway: $gateway`nDNS: $dns"
-    } catch {
-        Show-Status 'Could not read network configuration' $_.Exception.Message 'Error'
-    }
+    } catch { Show-Status 'Could not read network configuration' $_.Exception.Message 'Error' }
 }
 
 $modifiers = [NativeHotKey]::MOD_CONTROL -bor [NativeHotKey]::MOD_ALT
@@ -99,13 +93,13 @@ try {
         $registered += $hotkey.Id
     }
 
-    Show-Status 'Network hotkeys started' "Ctrl+Alt+1 -> 192.168.3.1`nCtrl+Alt+2 -> 192.168.3.11`nCtrl+Alt+G -> Show current configuration"
+    Show-Status 'Network hotkeys started' "Ctrl+Alt+1 -> Profile A ($($config.ProfileA.Gateway))`nCtrl+Alt+2 -> Profile B ($($config.ProfileB.Gateway))`nCtrl+Alt+G -> Show current configuration"
     $message = [NativeHotKey+MSG]::new()
     while ([NativeHotKey]::GetMessage([ref]$message, [IntPtr]::Zero, 0, 0) -gt 0) {
         if ($message.message -eq [NativeHotKey]::WM_HOTKEY) {
             switch ($message.wParam.ToUInt32()) {
-                1 { Set-GatewayAndDns '192.168.3.1' }
-                2 { Set-GatewayAndDns '192.168.3.11' }
+                1 { Set-NetworkProfile $config.ProfileA 'A' }
+                2 { Set-NetworkProfile $config.ProfileB 'B' }
                 3 { Show-NetworkStatus }
             }
         }
