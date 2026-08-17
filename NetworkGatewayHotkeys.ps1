@@ -1,4 +1,5 @@
 # Ctrl+Alt+1 -> Profile A; Ctrl+Alt+2 -> Profile B
+# Ctrl+Alt+3 -> DHCP for IPv4 address, gateway, and DNS.
 # Ctrl+Alt+G -> show current gateway and DNS.
 
 $ErrorActionPreference = 'Stop'
@@ -49,6 +50,13 @@ function Get-TargetAdapter {
     return Get-NetAdapter -Name $interfaceAlias -ErrorAction Stop
 }
 
+function Set-JapanRegionalSettings {
+    Set-TimeZone -Id 'Tokyo Standard Time'
+    Set-Culture -CultureInfo 'ja-JP'
+    Set-WinSystemLocale -SystemLocale 'ja-JP'
+    Set-WinHomeLocation -GeoId 122
+}
+
 function Set-NetworkProfile($profile, [string]$profileName) {
     try {
         $adapter = Get-TargetAdapter
@@ -62,8 +70,30 @@ function Set-NetworkProfile($profile, [string]$profileName) {
         New-NetRoute -InterfaceIndex $interfaceIndex -DestinationPrefix '0.0.0.0/0' -NextHop $profile.Gateway -RouteMetric 0 | Out-Null
         Set-DnsClientServerAddress -InterfaceIndex $interfaceIndex -ServerAddresses @($profile.Dns)
         Clear-DnsClientCache
-        Show-Status "Switched to Profile $profileName" "Adapter: $interfaceAlias`nGateway: $($profile.Gateway)`nDNS: $(@($profile.Dns) -join ', ')"
+
+        $regionStatus = ''
+        if ([string]$profile.Gateway -eq '192.168.3.11') {
+            try {
+                Set-JapanRegionalSettings
+                $regionStatus = "`nTime zone and region: Japan (Tokyo)`nSome regional changes may require sign-out."
+            } catch {
+                $regionStatus = "`nWarning: Could not apply Japan regional settings: $($_.Exception.Message)"
+            }
+        }
+        Show-Status "Switched to Profile $profileName" "Adapter: $interfaceAlias`nGateway: $($profile.Gateway)`nDNS: $(@($profile.Dns) -join ', ')$regionStatus"
     } catch { Show-Status 'Network switch failed' $_.Exception.Message 'Error' }
+}
+
+function Set-AutomaticNetworkConfiguration {
+    try {
+        [void](Get-TargetAdapter)
+        & netsh.exe interface ipv4 set address name="$interfaceAlias" source=dhcp | Out-Null
+        if ($LASTEXITCODE -ne 0) { throw "Could not enable automatic IPv4 addressing (netsh exit code $LASTEXITCODE)." }
+        & netsh.exe interface ipv4 set dnsservers name="$interfaceAlias" source=dhcp | Out-Null
+        if ($LASTEXITCODE -ne 0) { throw "Could not enable automatic DNS (netsh exit code $LASTEXITCODE)." }
+        Clear-DnsClientCache
+        Show-Status 'Automatic network configuration enabled' "Adapter: $interfaceAlias`nIPv4 address: Automatic (DHCP)`nGateway: Automatic (DHCP)`nDNS: Automatic (DHCP)"
+    } catch { Show-Status 'Could not enable automatic configuration' $_.Exception.Message 'Error' }
 }
 
 function Show-NetworkStatus {
@@ -85,7 +115,8 @@ try {
     foreach ($hotkey in @(
         @{ Id = 1; Key = [uint32][char]'1' },
         @{ Id = 2; Key = [uint32][char]'2' },
-        @{ Id = 3; Key = [uint32][char]'G' }
+        @{ Id = 3; Key = [uint32][char]'3' },
+        @{ Id = 4; Key = [uint32][char]'G' }
     )) {
         if (-not [NativeHotKey]::RegisterHotKey([IntPtr]::Zero, $hotkey.Id, $modifiers, $hotkey.Key)) {
             throw "Could not register hotkey ID $($hotkey.Id); it may be in use by another program."
@@ -93,14 +124,15 @@ try {
         $registered += $hotkey.Id
     }
 
-    Show-Status 'Network hotkeys started' "Ctrl+Alt+1 -> Profile A ($($config.ProfileA.Gateway))`nCtrl+Alt+2 -> Profile B ($($config.ProfileB.Gateway))`nCtrl+Alt+G -> Show current configuration"
+    Show-Status 'Network hotkeys started' "Ctrl+Alt+1 -> Profile A ($($config.ProfileA.Gateway))`nCtrl+Alt+2 -> Profile B ($($config.ProfileB.Gateway))`nCtrl+Alt+3 -> Automatic IP and DNS`nCtrl+Alt+G -> Show current configuration"
     $message = [NativeHotKey+MSG]::new()
     while ([NativeHotKey]::GetMessage([ref]$message, [IntPtr]::Zero, 0, 0) -gt 0) {
         if ($message.message -eq [NativeHotKey]::WM_HOTKEY) {
             switch ($message.wParam.ToUInt32()) {
                 1 { Set-NetworkProfile $config.ProfileA 'A' }
                 2 { Set-NetworkProfile $config.ProfileB 'B' }
-                3 { Show-NetworkStatus }
+                3 { Set-AutomaticNetworkConfiguration }
+                4 { Show-NetworkStatus }
             }
         }
     }
