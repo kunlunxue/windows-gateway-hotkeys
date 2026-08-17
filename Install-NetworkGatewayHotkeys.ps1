@@ -134,6 +134,6 @@ Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Pr
 Start-ScheduledTask -TaskName $taskName
 
 [System.Windows.Forms.MessageBox]::Show(
-    "Installation complete.`n`nCtrl+Alt+1: Profile A ($($config.ProfileA.Gateway))`nCtrl+Alt+2: Profile B ($($config.ProfileB.Gateway))`nCtrl+Alt+G: show current gateway and DNS",
+    "Installation complete.`n`nCtrl+Alt+1: Profile A ($($config.ProfileA.Gateway))`nCtrl+Alt+2: Profile B ($($config.ProfileB.Gateway))`nCtrl+Alt+3: automatic IP, gateway, and DNS`nCtrl+Alt+G: show current gateway and DNS",
     'Network hotkeys', 'OK', 'Information'
 ) | Out-Null
